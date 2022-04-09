@@ -8,6 +8,8 @@
 
     .PARAMETER ClientID
         Azure AD application ID
+        This will require API Permission ()
+        Also will require a read access to all subscription to grab metrics from
 
     .PARAMETER ClientSecret
         Azure AD application secret.
