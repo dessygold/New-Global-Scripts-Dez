@@ -35,32 +35,55 @@ $kvName          = "kv-it-inf-aad-002"
 $spDisplayName   = "pra-resourse-health"
 $spkvSecretName  = "pra-resource-health"
 $TenantId        = "60a5b34b-c976-4591-a955-f65531bb4d4b" 
-$subscriptionID  = "50664444-1a76-4154-b346-a3702c8b7b47"
+#$subscriptionID  = "50664444-1a76-4154-b346-a3702c8b7b47"
+$subscriptionID  = "3ed787a6-c475-45af-be22-058195388d44"
 $environment     = "AzureCloud"
 
 ##################################### Login To Azure Subscription ##################################################
-Clear-AzContext -Force
-Set-AzContext -Tenant $TenantId -Subscription $subscriptionID
-Write-Host  "checking context ................."
-Connect-AzAccount -Environment $environment -TenantId $TenantId -Subscription $subscriptionID
+#Clear-AzContext -Force
+#Set-AzContext -Tenant $TenantId -Subscription $subscriptionID
+#Write-Host  "checking context ................."
+#Connect-AzAccount -Environment $environment -TenantId $TenantId -Subscription $subscriptionID
+#Connect-AzAccount
+################################################################ Log in with Runsas/Identity ################
+$automationAccount = "pra-resource-health-test"
+$SystemIdentity     = "38606faf-4cc3-418f-b3c9-fb3edea9f221"
+
+
+# Ensures you do not inherit an AzContext in your runbook
+Disable-AzContextAutosave -Scope Process | Out-Null
+
+# Connect using a Managed Service Identity
+try {
+        $AzureContext = (Connect-AzAccount -Identity).context
+		#$AzureContext = (Connect-AzAccount -Identity -AccountId $identity.ClientId).context
+        $AzureContext = Set-AzContext -Subscription $subscriptionID -DefaultProfile $AzureContext
+    }
+catch{
+        Write-Output "There is no system-assigned user identity. Aborting."; 
+        exit
+    }
+
 
 ######################### Get App ID and Secret #####################################################################
-$ClientID     = (Get-AzADApplication -DisplayName $spDisplayName).AppId
+#$ClientID     = (Get-AzADApplication -DisplayName $spDisplayName).AppId
+$ClientID = "b4937906-3e60-4e48-b4d6-7fe048239f59"
 $ClientSecret = Get-AzKeyVaultSecret -VaultName $kvName -Name $spkvSecretName -AsPlainText
 
-$ClientID
+Write-Output "ClientID"=$ClientID
+Write-Output "ClientSecret"=$ClientSecret
 
 ############### Generate an authentication token to use against Azure management Rest API’s ##############################
 $TokenEndpoint = {https://login.windows.net/{0}/oauth2/token} -f $TenantId 
 $resourceURL = "https://management.core.windows.net/";
-
+Write-Output "get body"
 $Body = @{
         'resource'= $resourceURL
         'client_id' = $ClientID
         'grant_type' = 'client_credentials'
         'client_secret' = $ClientSecret
 }
-
+Write-Output "get param"
 $params = @{
     ContentType = 'application/x-www-form-urlencoded'
     Headers = @{'accept'='application/json'}
@@ -71,9 +94,11 @@ $params = @{
 
 $authToken = Invoke-RestMethod @params
 
+Write-Output "authToken"=$authToken
+
 
 ######################## Create Auth Header with the Generated Auth Token ###########################################################
-
+Write-Output "get authheader"
 $authHeader = @{
     "Content-Type" = "application/json"
     "Authorization"= "Bearer " + $authToken.access_token
@@ -82,9 +107,15 @@ $authHeader = @{
  ##########################  Loop through All Azure Subscription and get all resources using Graph API #######################
 ############################# Add everything to a hash table ###############################################################
 $Subs = Get-AzSubscription
+Write-Output $Subs
+
 $allHealths = @()
+Write-Output "GET SUB"
 foreach ($Sub in $Subs) {
-    Set-AzContext $Sub.id | Out-Null
+	#$Subid = $Sub
+
+	Set-AzContext -Subscription $Sub.Id -DefaultProfile $AzureContext | Out-Null
+    #Set-AzContext $Sub.id | Out-Null
     Write-Host "Processing Subscription:" $($Sub).name
 
     $APIVersion = "2022-01-01"
@@ -127,3 +158,15 @@ foreach ($Sub in $Subs) {
 $ExportPath = ".\PRA_ResourceHealth-$(get-date -f yyyy-MM-dd-HHmm).csv"
 $allHealths | Export-Csv -Force -Path $ExportPath
 Write-Host "CSV File has been exported to $ExportPath" -ForegroundColor Green
+
+$StorageAccount = Get-AzStorageAccount -ResourceGroupName "TEST-AUTH-RG" -Name "resourcehealthstore01" 
+$Context = $StorageAccount.Context
+# upload a file to the default account (inferred) access tier
+$Blob1HT = @{
+  File             = ".\PRA_ResourceHealth-$(get-date -f yyyy-MM-dd-HHmm).csv"
+  Container        = "resource-health-container"
+  Blob             = "PRA_ResourceHealth-$(get-date -f yyyy-MM-dd-HHmm).csv"
+  Context          = $Context
+  StandardBlobTier = 'Hot'
+}
+Set-AzStorageBlobContent @Blob1HT
